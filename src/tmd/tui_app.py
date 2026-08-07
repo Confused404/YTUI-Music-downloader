@@ -30,6 +30,7 @@ from textual.canvas import Canvas
 
 from tmd.database import Database, Song
 from tmd.auth import is_authenticated, logout, Credentials, AuthenticationError
+from googleapiclient.discovery import build
 from tmd.sync import sync_liked_songs, SyncError
 from tmd.download import DownloadManager, DownloadProgress
 from tmd.search import search_youtube, add_to_liked_playlist
@@ -245,6 +246,7 @@ class SearchScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "pop_screen", "Back", show=False),
+        Binding("d", "download_selected", "Download"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -275,10 +277,10 @@ class SearchScreen(Screen):
 
     def action_download_selected(self) -> None:
         table = self.query_one("#search-results", DataTable)
-        if table.cursor_row is not None:
-            row = table.get_row_at(table.cursor_row)
-            if row:
-                video_id = row[0]
+        if table.cursor_row is not None and self.results:
+            row_idx = table.cursor_row
+            if 0 <= row_idx < len(self.results):
+                video_id = self.results[row_idx]["video_id"]
                 self.app.action_download_and_like(video_id)
 
 
@@ -418,15 +420,7 @@ class TMDApp(App):
                 new_songs = sync_liked_songs(self.creds, self.db)
                 if new_songs:
                     self.notify(f"Found {len(new_songs)} new liked songs!")
-                    if not self.download_manager:
-                        self.download_manager = DownloadManager(
-                            self.db,
-                            self.settings.download_dir,
-                            self.settings.audio_quality,
-                            self.settings.max_concurrent_downloads,
-                            progress_callback=self._on_download_progress,
-                        )
-                        self.download_manager.start()
+                    self._ensure_download_manager()
                     self.download_manager.queue_songs(new_songs)
                 self._refresh_library()
                 # Pass download progress to library screen
@@ -507,6 +501,18 @@ class TMDApp(App):
 
         asyncio.create_task(do_search())
 
+    def _ensure_download_manager(self) -> None:
+        """Initialize download manager if not already running."""
+        if not self.download_manager:
+            self.download_manager = DownloadManager(
+                self.db,
+                self.settings.download_dir,
+                self.settings.audio_quality,
+                self.settings.max_concurrent_downloads,
+                progress_callback=self._on_download_progress,
+            )
+            self.download_manager.start()
+
     def action_download_and_like(self, video_id: str) -> None:
         async def do_download():
             try:
@@ -518,34 +524,48 @@ class TMDApp(App):
                     self.notify("Song already in library!", severity="warning")
                     return
 
+                # Get video info first
+                youtube = build("youtube", "v3", credentials=self.creds)
+                video_response = youtube.videos().list(
+                    part="snippet,contentDetails",
+                    id=video_id,
+                ).execute()
+
+                if not video_response["items"]:
+                    self.notify("Video not found!", severity="error")
+                    return
+
+                video = video_response["items"][0]
+                snippet = video["snippet"]
+                song = Song(
+                    video_id=video_id,
+                    title=snippet["title"],
+                    artist=snippet.get("channelTitle", "Unknown"),
+                    duration_secs=0,
+                    thumbnail_url=snippet["thumbnails"]["default"]["url"],
+                    file_path="",
+                    added_to_yt_at=None,
+                    downloaded_at=None,
+                    download_status="pending",
+                    retry_count=0,
+                )
+                self.db.insert_song(song)
+
                 # Add to liked playlist
                 success = add_to_liked_playlist(self.creds, video_id)
                 if success:
                     self.notify("Added to liked songs!")
                 else:
-                    self.notify("Failed to add to liked playlist", severity="warning")
+                    self.notify("Failed to add to liked playlist (downloading anyway)", severity="warning")
 
-                # Get song info and add to library
-                results = search_youtube(self.creds, video_id, max_results=1)
-                if results:
-                    song_data = results[0]
-                    song = Song(
-                        video_id=video_id,
-                        title=song_data["title"],
-                        artist=song_data["artist"],
-                        duration_secs=0,
-                        thumbnail_url=song_data["thumbnail"],
-                        file_path="",
-                        added_to_yt_at=None,
-                        downloaded_at=None,
-                        download_status="pending",
-                        retry_count=0,
-                    )
-                    self.db.insert_song(song)
-                    if self.download_manager:
-                        self.download_manager.queue_song(song)
-                    self._refresh_library()
+                # Ensure download manager is running and queue
+                self._ensure_download_manager()
+                self.download_manager.queue_song(song)
+                self._refresh_library()
             except Exception as e:
+                print(f"[DOWNLOAD ERROR] action_download_and_like: {e}")
+                import traceback
+                traceback.print_exc()
                 self.notify(_clean_msg(f"Download failed: {e}"), severity="error")
 
         asyncio.create_task(do_download())

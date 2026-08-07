@@ -61,16 +61,17 @@ class DownloadManager:
                 DownloadProgress(song.video_id, 0.0, "downloading")
             )
 
+        # Use yt-dlp output template (it handles extension itself)
+        output_template = str(self.download_dir / "%(artist|)s - %(title)s.%(ext)s")
+
         cmd = [
             "yt-dlp",
             "-x",
-            "--audio-format",
-            "mp3",
-            "--audio-quality",
-            self.audio_quality,
-            "--output",
-            str(output_path.with_suffix(".%(ext)s")),
+            "--audio-format", "mp3",
+            "--audio-quality", self.audio_quality,
+            "--output", output_template,
             "--newline",
+            "--no-warnings",
             f"https://www.youtube.com/watch?v={song.video_id}",
         ]
 
@@ -81,42 +82,68 @@ class DownloadManager:
                 stderr=asyncio.subprocess.PIPE,
             )
 
-            # Parse progress from stdout
-            while True:
-                line = await process.stdout.readline()
-                if not line:
-                    break
-                line = line.decode("utf-8", errors="replace")
+            stderr_lines = []
 
-                # Parse download progress
-                match = re.search(r"\[download\]\s+(\d+\.?\d*)%", line)
-                if match and self.progress_callback:
-                    percent = float(match.group(1))
-                    self.progress_callback(
-                        DownloadProgress(song.video_id, percent, "downloading")
-                    )
+            # Read stdout and stderr concurrently
+            async def read_stdout():
+                while True:
+                    line = await process.stdout.readline()
+                    if not line:
+                        break
+                    text = line.decode("utf-8", errors="replace")
+                    # Parse download progress
+                    match = re.search(r"\[download\]\s+(\d+\.?\d*)%", text)
+                    if match and self.progress_callback:
+                        percent = float(match.group(1))
+                        self.progress_callback(
+                            DownloadProgress(song.video_id, percent, "downloading")
+                        )
 
+            async def read_stderr():
+                while True:
+                    line = await process.stderr.readline()
+                    if not line:
+                        break
+                    stderr_lines.append(line.decode("utf-8", errors="replace").strip())
+
+            await asyncio.gather(read_stdout(), read_stderr())
             await process.wait()
 
             if process.returncode == 0:
-                self.db.update_download_status(
-                    song.video_id, "completed", str(output_path)
-                )
+                # Find the actual downloaded file (yt-dlp may have used a different filename)
+                actual_file = self._find_downloaded_file(song)
+                file_path = str(actual_file) if actual_file else str(output_path)
+                self.db.update_download_status(song.video_id, "completed", file_path)
                 if self.progress_callback:
                     self.progress_callback(
                         DownloadProgress(song.video_id, 100.0, "completed")
                     )
                 return True
             else:
+                error_msg = "\n".join(stderr_lines[-5:]) if stderr_lines else f"Exit code {process.returncode}"
+                print(f"[DOWNLOAD ERROR] {song.title}: {error_msg}")
                 raise subprocess.CalledProcessError(process.returncode, cmd)
 
-        except Exception:
+        except Exception as e:
+            print(f"[DOWNLOAD ERROR] {song.title}: {e}")
             self.db.increment_retry(song.video_id)
             if self.progress_callback:
                 self.progress_callback(
                     DownloadProgress(song.video_id, 0.0, "failed")
                 )
             return False
+
+    def _find_downloaded_file(self, song: Song) -> Optional[Path]:
+        """Find the actual downloaded MP3 file for a song."""
+        expected = self._build_output_path(song)
+        if expected.exists():
+            return expected
+
+        # Try to find by video_id in filename
+        for f in self.download_dir.iterdir():
+            if f.suffix == ".mp3" and song.video_id in f.name:
+                return f
+        return None
 
     async def _worker(self) -> None:
         """Worker that processes downloads from the queue."""
