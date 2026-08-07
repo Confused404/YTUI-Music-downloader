@@ -243,6 +243,10 @@ class SearchScreen(Screen):
 
     results = reactive([])
 
+    BINDINGS = [
+        Binding("escape", "pop_screen", "Back", show=False),
+    ]
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical():
@@ -282,6 +286,10 @@ class SearchScreen(Screen):
 
 class SettingsScreen(Screen):
     """Screen for application settings."""
+
+    BINDINGS = [
+        Binding("escape", "pop_screen", "Back", show=False),
+    ]
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -370,7 +378,7 @@ class TMDApp(App):
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
+        Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("/", "push_search", "Search"),
         Binding("comma", "push_settings", "Settings"),
     ]
