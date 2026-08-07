@@ -2,17 +2,13 @@
 
 import os
 import json
-import webbrowser
-from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
 from typing import Optional
 
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
-from tmd.config import get_config_dir, get_credentials_path
+from tmd.config import get_credentials_path
 
 
 # Scopes needed for YouTube Data API
@@ -22,68 +18,39 @@ SCOPES = [
 ]
 
 
-class _RedirectHandler(BaseHTTPRequestHandler):
-    """Handles OAuth2 redirect callback."""
-
-    def do_GET(self):
-        """Capture authorization code from redirect."""
-        query = parse_qs(urlparse(self.path).query)
-        self.server.auth_code = query.get("code", [None])[0]
-        self.server.auth_error = query.get("error", [None])[0]
-
-        self.send_response(200)
-        self.send_header("Content-type", "text/html")
-        self.end_headers()
-        if self.server.auth_code:
-            self.wfile.write(
-                b"<h1>Authentication successful!</h1><p>You can close this window.</p>"
-            )
-        else:
-            self.wfile.write(
-                b"<h1>Authentication failed.</h1><p>Please try again.</p>"
-            )
-
-    def log_message(self, format, *args):
-        """Suppress server logs."""
-        pass
-
-
-def authenticate(client_id: str, client_secret: str) -> Credentials:
-    """Run OAuth2 flow and return credentials."""
-    client_config = {
+def _build_client_config(client_id: str, client_secret: str) -> dict:
+    """Build client config dict matching Google Cloud Console download format."""
+    return {
         "installed": {
             "client_id": client_id,
-            "client_secret": client_secret,
+            "project_id": "",
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_secret": client_secret,
             "redirect_uris": ["http://localhost:8080"],
         }
     }
 
+
+def authenticate(client_id: str, client_secret: str) -> Credentials:
+    """Run OAuth2 flow and return credentials.
+
+    Uses google-auth-oauthlib's built-in run_local_server() which handles:
+    - redirect_uri inclusion in auth URL
+    - browser opening
+    - local callback server
+    - token exchange
+    """
+    client_config = _build_client_config(client_id, client_secret)
     flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
 
-    # Use local server on port 8080
-    server = HTTPServer(("localhost", 8080), _RedirectHandler)
-    server.auth_code = None
-    server.auth_error = None
-
-    # Get authorization URL
-    auth_url, _ = flow.authorization_url(prompt="consent")
-
-    # Open browser
-    webbrowser.open(auth_url)
-
-    # Wait for callback
-    server.handle_request()
-    server.server_close()
-
-    if server.auth_error:
-        raise AuthenticationError(f"OAuth error: {server.auth_error}")
-    if not server.auth_code:
-        raise AuthenticationError("No authorization code received")
-
-    flow.fetch_token(code=server.auth_code)
-    creds = flow.credentials
+    # run_local_server handles everything: auth URL, browser, callback, token exchange
+    creds = flow.run_local_server(
+        port=8080,
+        prompt="consent",
+        success_message="Authentication successful! You can close this window.",
+    )
 
     # Save with restricted permissions
     save_credentials(creds)
