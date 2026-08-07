@@ -50,9 +50,11 @@ class DownloadManager:
     async def _download_song(self, song: Song) -> bool:
         """Download a single song. Returns True on success."""
         output_path = self._build_output_path(song)
+        print(f"[DOWNLOAD] Starting: {song.title} ({song.video_id})")
 
         # Check if already downloaded
         if output_path.exists() and song.download_status == "completed":
+            print(f"[DOWNLOAD] Already exists: {output_path}")
             return True
 
         self.db.update_download_status(song.video_id, "downloading")
@@ -61,8 +63,8 @@ class DownloadManager:
                 DownloadProgress(song.video_id, 0.0, "downloading")
             )
 
-        # Use yt-dlp output template (it handles extension itself)
-        output_template = str(self.download_dir / "%(artist|)s - %(title)s.%(ext)s")
+        # Use a simple output template with video_id to make it trackable
+        output_template = str(self.download_dir / f"{song.video_id}.%(ext)s")
 
         cmd = [
             "yt-dlp",
@@ -72,8 +74,11 @@ class DownloadManager:
             "--output", output_template,
             "--newline",
             "--no-warnings",
+            "--no-playlist",
             f"https://www.youtube.com/watch?v={song.video_id}",
         ]
+
+        print(f"[DOWNLOAD] Command: {' '.join(cmd[:8])} ...")
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -83,34 +88,45 @@ class DownloadManager:
             )
 
             stderr_lines = []
+            last_percent = 0
 
             # Read stdout and stderr concurrently
             async def read_stdout():
+                nonlocal last_percent
                 while True:
                     line = await process.stdout.readline()
                     if not line:
                         break
-                    text = line.decode("utf-8", errors="replace")
+                    text = line.decode("utf-8", errors="replace").strip()
+                    if text:
+                        print(f"[yt-dlp stdout] {text[:120]}")
                     # Parse download progress
                     match = re.search(r"\[download\]\s+(\d+\.?\d*)%", text)
                     if match and self.progress_callback:
                         percent = float(match.group(1))
-                        self.progress_callback(
-                            DownloadProgress(song.video_id, percent, "downloading")
-                        )
+                        if percent != last_percent:
+                            last_percent = percent
+                            self.progress_callback(
+                                DownloadProgress(song.video_id, percent, "downloading")
+                            )
 
             async def read_stderr():
                 while True:
                     line = await process.stderr.readline()
                     if not line:
                         break
-                    stderr_lines.append(line.decode("utf-8", errors="replace").strip())
+                    text = line.decode("utf-8", errors="replace").strip()
+                    if text:
+                        stderr_lines.append(text)
+                        print(f"[yt-dlp stderr] {text[:120]}")
 
             await asyncio.gather(read_stdout(), read_stderr())
             await process.wait()
 
+            print(f"[DOWNLOAD] Exit code for '{song.title}': {process.returncode}")
+
             if process.returncode == 0:
-                # Find the actual downloaded file (yt-dlp may have used a different filename)
+                # Find the actual downloaded file
                 actual_file = self._find_downloaded_file(song)
                 file_path = str(actual_file) if actual_file else str(output_path)
                 self.db.update_download_status(song.video_id, "completed", file_path)
@@ -118,6 +134,7 @@ class DownloadManager:
                     self.progress_callback(
                         DownloadProgress(song.video_id, 100.0, "completed")
                     )
+                print(f"[DOWNLOAD] Completed: {song.title} -> {file_path}")
                 return True
             else:
                 error_msg = "\n".join(stderr_lines[-5:]) if stderr_lines else f"Exit code {process.returncode}"
@@ -157,6 +174,7 @@ class DownloadManager:
 
     def start(self) -> None:
         """Start the download manager workers."""
+        print(f"[DOWNLOAD] Starting manager with {self.max_concurrent} workers")
         self._running = True
         for _ in range(self.max_concurrent):
             task = asyncio.create_task(self._worker())
@@ -164,6 +182,7 @@ class DownloadManager:
 
     def stop(self) -> None:
         """Stop the download manager."""
+        print("[DOWNLOAD] Stopping manager")
         self._running = False
         for worker in self._workers:
             worker.cancel()
@@ -171,9 +190,11 @@ class DownloadManager:
 
     def queue_song(self, song: Song) -> None:
         """Add a song to the download queue."""
+        print(f"[DOWNLOAD] Queued: {song.title}")
         self._queue.put_nowait(song)
 
     def queue_songs(self, songs: List[Song]) -> None:
         """Add multiple songs to the download queue."""
+        print(f"[DOWNLOAD] Queuing {len(songs)} songs")
         for song in songs:
             self.queue_song(song)

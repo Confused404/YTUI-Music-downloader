@@ -193,21 +193,22 @@ class LibraryScreen(Screen):
         table = self.query_one("#library-table", DataTable)
         table.clear()
         num_cols = len(table.columns)
+        if num_cols == 0:
+            # Columns not ready yet, skip
+            return
         for i, song in enumerate(self.songs, 1):
             duration = f"{song.duration_secs // 60}:{song.duration_secs % 60:02d}" if song.duration_secs else "??:??"
             status = self._format_status(song)
             cells = [str(i), song.title, song.artist, duration, status]
             if len(cells) != num_cols:
                 print(f"[DEBUG] Column mismatch: {len(cells)} cells vs {num_cols} columns")
-                print(f"[DEBUG] Cells: {cells}")
-                print(f"[DEBUG] Table columns: {list(table.columns.keys())}")
                 continue
             try:
-                table.add_row(*cells, key=song.video_id)
+                table.add_row(*cells)
             except Exception as e:
-                print(f"[DEBUG] add_row failed: {e}")
+                print(f"[DEBUG] add_row failed for '{song.title}': {e}")
                 print(f"[DEBUG] Cells: {cells}")
-                raise
+                # Don't crash, just skip this row
 
     def watch_songs(self, songs: List[Song]) -> None:
         self.update_library()
@@ -221,14 +222,9 @@ class LibraryScreen(Screen):
     def action_play_selected(self) -> None:
         table = self.query_one("#library-table", DataTable)
         if table.cursor_row is not None:
-            row_key = table.get_row_at(table.cursor_row)
-            # Find song by video_id
-            video_id = row_key[0] if row_key else None
-            if video_id:
-                for song in self.songs:
-                    if song.video_id == video_id:
-                        self.app.action_play_song(song)
-                        break
+            idx = table.cursor_row
+            if 0 <= idx < len(self.songs):
+                self.app.action_play_song(self.songs[idx])
 
     def action_toggle_play(self) -> None:
         self.app.action_toggle_play()
