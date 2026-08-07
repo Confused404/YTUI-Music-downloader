@@ -1,6 +1,7 @@
 """Textual TUI Application."""
 
 import asyncio
+import re
 import numpy as np
 from pathlib import Path
 from typing import Optional, List
@@ -35,6 +36,15 @@ from tmd.search import search_youtube, add_to_liked_playlist
 from tmd.player import AudioPlayer, PlaybackState, VisualizerData
 from tmd.settings import Settings
 from tmd.config import get_database_path, get_settings_path, get_music_dir
+
+
+def _clean_msg(text: str) -> str:
+    """Strip HTML and escape markup chars so Textual doesn't choke on error messages."""
+    # Remove HTML tags
+    text = re.sub(r"<[^>]+>", "", text)
+    # Escape Textual markup brackets
+    text = text.replace("[", "[[").replace("]", "]]")
+    return text
 
 
 # ── Visualizer Widget ──
@@ -376,7 +386,7 @@ class TMDApp(App):
                     self.download_manager.queue_songs(new_songs)
                 self._refresh_library()
         except Exception as e:
-            self.notify(f"Sync failed: {e}", severity="error")
+            self.notify(_clean_msg(f"Sync failed: {e}"), severity="error")
 
     def _refresh_library(self) -> None:
         library_screen = self.get_screen("library")
@@ -405,9 +415,9 @@ class TMDApp(App):
                 await self._startup_sync()
             except AuthenticationError as e:
                 # Show multi-line error as a notification
-                self.notify(str(e), severity="error", timeout=15)
+                self.notify(_clean_msg(str(e)), severity="error", timeout=15)
             except Exception as e:
-                self.notify(f"Login failed: {e}", severity="error")
+                self.notify(_clean_msg(f"Login failed: {e}"), severity="error")
 
         asyncio.create_task(do_login())
 
@@ -434,7 +444,7 @@ class TMDApp(App):
                 if isinstance(search_screen, SearchScreen):
                     search_screen.results = results
             except Exception as e:
-                self.notify(f"Search failed: {e}", severity="error")
+                self.notify(_clean_msg(f"Search failed: {e}"), severity="error")
 
         asyncio.create_task(do_search())
 
@@ -477,7 +487,7 @@ class TMDApp(App):
                         self.download_manager.queue_song(song)
                     self._refresh_library()
             except Exception as e:
-                self.notify(f"Download failed: {e}", severity="error")
+                self.notify(_clean_msg(f"Download failed: {e}"), severity="error")
 
         asyncio.create_task(do_download())
 
