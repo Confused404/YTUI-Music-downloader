@@ -30,7 +30,7 @@ from textual.canvas import Canvas
 
 from tmd.database import Database, Song
 from tmd.auth import is_authenticated, logout, Credentials, AuthenticationError
-from tmd.sync import sync_liked_songs
+from tmd.sync import sync_liked_songs, SyncError
 from tmd.download import DownloadManager, DownloadProgress
 from tmd.search import search_youtube, add_to_liked_playlist
 from tmd.player import AudioPlayer, PlaybackState, VisualizerData
@@ -385,11 +385,12 @@ class TMDApp(App):
                         self.download_manager.start()
                     self.download_manager.queue_songs(new_songs)
                 self._refresh_library()
+        except SyncError as e:
+            self.notify(_clean_msg(str(e)), severity="error", timeout=15)
         except Exception as e:
             import traceback
             err_msg = f"Sync failed: {e}"
             self.notify(_clean_msg(err_msg), severity="error")
-            # Print full traceback to terminal for debugging
             print(f"\n[DEBUG] {err_msg}")
             traceback.print_exc()
 
