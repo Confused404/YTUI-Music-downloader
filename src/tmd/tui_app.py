@@ -192,19 +192,22 @@ class LibraryScreen(Screen):
     def update_library(self) -> None:
         table = self.query_one("#library-table", DataTable)
         table.clear()
+        num_cols = len(table.columns)
         for i, song in enumerate(self.songs, 1):
             duration = f"{song.duration_secs // 60}:{song.duration_secs % 60:02d}" if song.duration_secs else "??:??"
             status = self._format_status(song)
-            # Highlight current row
-            style = "bold cyan" if song.video_id == self.current_song_id else None
-            table.add_row(
-                str(i),
-                song.title,
-                song.artist,
-                duration,
-                status,
-                key=song.video_id,
-            )
+            cells = [str(i), song.title, song.artist, duration, status]
+            if len(cells) != num_cols:
+                print(f"[DEBUG] Column mismatch: {len(cells)} cells vs {num_cols} columns")
+                print(f"[DEBUG] Cells: {cells}")
+                print(f"[DEBUG] Table columns: {list(table.columns.keys())}")
+                continue
+            try:
+                table.add_row(*cells, key=song.video_id)
+            except Exception as e:
+                print(f"[DEBUG] add_row failed: {e}")
+                print(f"[DEBUG] Cells: {cells}")
+                raise
 
     def watch_songs(self, songs: List[Song]) -> None:
         self.update_library()
