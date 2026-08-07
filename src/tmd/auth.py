@@ -67,8 +67,23 @@ def _generate_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
+def validate_credentials(client_id: str, client_secret: str) -> None:
+    """Validate that OAuth credentials are configured."""
+    if not client_id or not client_secret:
+        raise AuthenticationError(
+            "Google OAuth2 credentials not configured.\n\n"
+            "Please set one of the following:\n"
+            "1. Environment variables: TMD_YOUTUBE_CLIENT_ID and TMD_YOUTUBE_CLIENT_SECRET\n"
+            "2. Or edit ~/.config/tmd/settings.json and add:\n"
+            '   {"youtube_client_id": "your-id", "youtube_client_secret": "your-secret"}\n\n'
+            "Get your credentials from: https://console.cloud.google.com/apis/credentials"
+        )
+
+
 def authenticate(client_id: str, client_secret: str) -> Credentials:
     """Run OAuth2 flow with PKCE and return credentials."""
+    validate_credentials(client_id, client_secret)
+    
     # Generate PKCE
     code_verifier, code_challenge = _generate_pkce()
 

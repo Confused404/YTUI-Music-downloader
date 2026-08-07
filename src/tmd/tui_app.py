@@ -28,7 +28,7 @@ from textual.widgets import (
 from textual.canvas import Canvas
 
 from tmd.database import Database, Song
-from tmd.auth import is_authenticated, logout, Credentials
+from tmd.auth import is_authenticated, logout, Credentials, AuthenticationError
 from tmd.sync import sync_liked_songs
 from tmd.download import DownloadManager, DownloadProgress
 from tmd.search import search_youtube, add_to_liked_playlist
@@ -97,8 +97,24 @@ class LoginScreen(Screen):
         with Container(classes="login-container"):
             yield Label("Terminal Music Downloader", classes="title")
             yield Label("Connect your Google account to sync liked songs", classes="subtitle")
+            yield Static("", id="login-status")
             yield Button("Sign in with Google", variant="primary", id="login-btn")
         yield Footer()
+
+    def on_mount(self) -> None:
+        self._check_credentials()
+
+    def _check_credentials(self) -> None:
+        """Show warning if OAuth credentials are not configured."""
+        status = self.query_one("#login-status", Static)
+        app = self.app
+        if isinstance(app, TMDApp):
+            if not app.settings.youtube_client_id or not app.settings.youtube_client_secret:
+                status.update(
+                    "[yellow]⚠ Warning: Google OAuth credentials not configured.\n"
+                    "Set TMD_YOUTUBE_CLIENT_ID and TMD_YOUTUBE_CLIENT_SECRET environment variables,\n"
+                    "or edit ~/.config/tmd/settings.json[/yellow]"
+                )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "login-btn":
@@ -387,6 +403,9 @@ class TMDApp(App):
                 )
                 self.switch_screen("library")
                 await self._startup_sync()
+            except AuthenticationError as e:
+                # Show multi-line error as a notification
+                self.notify(str(e), severity="error", timeout=15)
             except Exception as e:
                 self.notify(f"Login failed: {e}", severity="error")
 
