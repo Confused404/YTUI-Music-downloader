@@ -386,7 +386,12 @@ class TMDApp(App):
                     self.download_manager.queue_songs(new_songs)
                 self._refresh_library()
         except Exception as e:
-            self.notify(_clean_msg(f"Sync failed: {e}"), severity="error")
+            import traceback
+            err_msg = f"Sync failed: {e}"
+            self.notify(_clean_msg(err_msg), severity="error")
+            # Print full traceback to terminal for debugging
+            print(f"\n[DEBUG] {err_msg}")
+            traceback.print_exc()
 
     def _refresh_library(self) -> None:
         library_screen = self.get_screen("library")
