@@ -137,7 +137,8 @@ class LibraryScreen(Screen):
     """Main library screen showing liked songs."""
 
     songs = reactive([])
-    current_song: Optional[Song] = None
+    current_song_id: Optional[str] = None
+    download_progress: reactive[dict] = reactive({})
 
     BINDINGS = [
         Binding("enter", "play_selected", "Play"),
@@ -162,21 +163,55 @@ class LibraryScreen(Screen):
         table.add_columns("#", "Title", "Artist", "Duration", "Status")
         self.update_library()
 
+    def _format_status(self, song: Song) -> str:
+        """Format the status column with progress and current-song indicators."""
+        # Check if currently playing
+        if song.video_id == self.current_song_id:
+            if self.app.player.state.name == "PLAYING":
+                return "▶ Playing"
+            else:
+                return "⏸ Paused"
+
+        # Show download progress
+        if song.download_status == "downloading":
+            pct = self.download_progress.get(song.video_id, 0)
+            bar_width = 8
+            filled = int(pct / 100 * bar_width)
+            bar = "█" * filled + "░" * (bar_width - filled)
+            return f"📥 {bar} {pct:.0f}%"
+
+        status_icons = {
+            "pending": "⏳ Pending",
+            "completed": "✅ Ready",
+            "failed": "❌ Failed",
+            "permanently_failed": "💀 Failed",
+        }
+        return status_icons.get(song.download_status, "❓ Unknown")
+
     def update_library(self) -> None:
         table = self.query_one("#library-table", DataTable)
         table.clear()
         for i, song in enumerate(self.songs, 1):
             duration = f"{song.duration_secs // 60}:{song.duration_secs % 60:02d}" if song.duration_secs else "??:??"
-            status_icon = {
-                "pending": "⏳",
-                "downloading": "📥",
-                "completed": "✅",
-                "failed": "❌",
-                "permanently_failed": "💀",
-            }.get(song.download_status, "❓")
-            table.add_row(str(i), song.title, song.artist, duration, status_icon, key=song.video_id)
+            status = self._format_status(song)
+            # Highlight current row
+            style = "bold cyan" if song.video_id == self.current_song_id else None
+            table.add_row(
+                str(i),
+                song.title,
+                song.artist,
+                duration,
+                status,
+                key=song.video_id,
+            )
 
     def watch_songs(self, songs: List[Song]) -> None:
+        self.update_library()
+
+    def watch_current_song_id(self, song_id: Optional[str]) -> None:
+        self.update_library()
+
+    def watch_download_progress(self, progress: dict) -> None:
         self.update_library()
 
     def action_play_selected(self) -> None:
@@ -358,6 +393,7 @@ class TMDApp(App):
         self.download_manager: Optional[DownloadManager] = None
         self.creds: Optional[Credentials] = None
         self.current_song_index: int = 0
+        self.download_progress: dict = {}  # video_id -> percent
 
     def on_mount(self) -> None:
         if is_authenticated():
@@ -385,6 +421,10 @@ class TMDApp(App):
                         self.download_manager.start()
                     self.download_manager.queue_songs(new_songs)
                 self._refresh_library()
+                # Pass download progress to library screen
+                library_screen = self.get_screen("library")
+                if isinstance(library_screen, LibraryScreen):
+                    library_screen.download_progress = self.download_progress
         except SyncError as e:
             self.notify(_clean_msg(str(e)), severity="error", timeout=15)
         except Exception as e:
@@ -398,6 +438,7 @@ class TMDApp(App):
         library_screen = self.get_screen("library")
         if isinstance(library_screen, LibraryScreen):
             library_screen.songs = self.db.get_all_songs()
+            library_screen.download_progress = self.download_progress
 
     def _on_visualizer_update(self, data: VisualizerData) -> None:
         try:
@@ -407,7 +448,11 @@ class TMDApp(App):
             pass
 
     def _on_download_progress(self, progress: DownloadProgress) -> None:
+        self.download_progress[progress.video_id] = progress.percent
         self._refresh_library()
+        # Clean up completed downloads from progress tracker
+        if progress.status == "completed":
+            self.download_progress.pop(progress.video_id, None)
 
     def action_login(self) -> None:
         async def do_login():
@@ -503,6 +548,10 @@ class TMDApp(App):
             if self.player.load(Path(song.file_path)):
                 self.player.play()
                 self.current_song_index = self.db.get_all_songs().index(song)
+                # Update library highlight
+                library_screen = self.get_screen("library")
+                if isinstance(library_screen, LibraryScreen):
+                    library_screen.current_song_id = song.video_id
                 try:
                     now_playing = self.query_one("#now-playing", Static)
                     now_playing.update(f"Now Playing: {song.title} - {song.artist}")
