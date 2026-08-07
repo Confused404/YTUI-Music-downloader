@@ -1,10 +1,17 @@
-"""Google OAuth2 authentication."""
+"""Google OAuth2 authentication with manual PKCE flow."""
 
 import os
 import json
+import base64
+import hashlib
+import secrets
+import webbrowser
+from pathlib import Path
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs, urlencode
 from typing import Optional
+import requests
 
-from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
@@ -17,39 +24,107 @@ SCOPES = [
     "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
 
+AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+REDIRECT_URI = "http://localhost:8080"
 
-def _build_client_config(client_id: str, client_secret: str) -> dict:
-    """Build client config dict matching Google Cloud Console download format."""
-    return {
-        "installed": {
-            "client_id": client_id,
-            "project_id": "",
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "client_secret": client_secret,
-            "redirect_uris": ["http://localhost:8080"],
-        }
-    }
+
+class _RedirectHandler(BaseHTTPRequestHandler):
+    """Handles OAuth2 redirect callback."""
+
+    def do_GET(self):
+        """Capture authorization code from redirect."""
+        query = parse_qs(urlparse(self.path).query)
+        self.server.auth_code = query.get("code", [None])[0]
+        self.server.auth_error = query.get("error", [None])[0]
+
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+        if self.server.auth_code:
+            self.wfile.write(
+                b"<h1>Authentication successful!</h1><p>You can close this window.</p>"
+            )
+        else:
+            self.wfile.write(
+                b"<h1>Authentication failed.</h1><p>Please try again.</p>"
+            )
+
+    def log_message(self, format, *args):
+        """Suppress server logs."""
+        pass
+
+
+def _generate_pkce() -> tuple[str, str]:
+    """Generate PKCE code_verifier and code_challenge."""
+    # 43-128 chars of unreserved characters
+    verifier = base64.urlsafe_b64encode(
+        secrets.token_bytes(64)
+    ).decode("ascii").rstrip("=")
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode("ascii")).digest()
+    ).decode("ascii").rstrip("=")
+    return verifier, challenge
 
 
 def authenticate(client_id: str, client_secret: str) -> Credentials:
-    """Run OAuth2 flow and return credentials.
+    """Run OAuth2 flow with PKCE and return credentials."""
+    # Generate PKCE
+    code_verifier, code_challenge = _generate_pkce()
 
-    Uses google-auth-oauthlib's built-in run_local_server() which handles:
-    - redirect_uri inclusion in auth URL
-    - browser opening
-    - local callback server
-    - token exchange
-    """
-    client_config = _build_client_config(client_id, client_secret)
-    flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+    # Build authorization URL with ALL required parameters
+    auth_params = {
+        "client_id": client_id,
+        "redirect_uri": REDIRECT_URI,
+        "response_type": "code",
+        "scope": " ".join(SCOPES),
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    auth_url = f"{AUTH_URL}?{urlencode(auth_params)}"
 
-    # run_local_server handles everything: auth URL, browser, callback, token exchange
-    creds = flow.run_local_server(
-        port=8080,
-        prompt="consent",
-        success_message="Authentication successful! You can close this window.",
+    # Start local redirect server
+    server = HTTPServer(("localhost", 8080), _RedirectHandler)
+    server.auth_code = None
+    server.auth_error = None
+
+    # Open browser
+    webbrowser.open(auth_url)
+
+    # Wait for callback
+    server.handle_request()
+    server.server_close()
+
+    if server.auth_error:
+        raise AuthenticationError(f"OAuth error: {server.auth_error}")
+    if not server.auth_code:
+        raise AuthenticationError("No authorization code received")
+
+    # Exchange code for tokens
+    token_data = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "code": server.auth_code,
+        "redirect_uri": REDIRECT_URI,
+        "grant_type": "authorization_code",
+        "code_verifier": code_verifier,
+    }
+
+    response = requests.post(TOKEN_URL, data=token_data)
+    if response.status_code != 200:
+        raise AuthenticationError(f"Token exchange failed: {response.text}")
+
+    token_info = response.json()
+
+    creds = Credentials(
+        token=token_info["access_token"],
+        refresh_token=token_info.get("refresh_token"),
+        token_uri=TOKEN_URL,
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=SCOPES,
     )
 
     # Save with restricted permissions
