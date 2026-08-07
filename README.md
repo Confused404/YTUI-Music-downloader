@@ -16,8 +16,8 @@ A modern, terminal-based music downloader and player for YouTube Music liked son
 ### Prerequisites
 
 1. Python 3.11+
-2. Google Cloud OAuth2 credentials (see setup below)
-3. yt-dlp (installed automatically via pip)
+2. [uv](https://github.com/astral-sh/uv) (recommended) or `pip`
+3. Google Cloud OAuth2 credentials (see setup below)
 
 ### Setup
 
@@ -27,8 +27,16 @@ git clone https://github.com/Confused404/music-downloader-tui.git
 cd music-downloader-tui
 ```
 
-2. Install dependencies:
+2. **Using uv** (recommended - fast, modern package manager):
 ```bash
+uv venv .venv --python python3
+uv pip install -e .
+```
+
+   **Using pip** (traditional):
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .
 ```
 
@@ -45,12 +53,20 @@ export TMD_YOUTUBE_CLIENT_ID="your-client-id"
 export TMD_YOUTUBE_CLIENT_SECRET="your-client-secret"
 ```
 
-4. Run the app:
+## Usage
+
+### Running the App
+
+**With uv** (recommended):
 ```bash
-tmd
+uv run tmd
 ```
 
-## Usage
+**With pip/venv**:
+```bash
+source .venv/bin/activate
+tmd
+```
 
 ### Keybindings
 
