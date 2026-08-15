@@ -165,6 +165,19 @@ class Database:
             rows = conn.execute("SELECT video_id FROM songs").fetchall()
             return {row["video_id"] for row in rows}
 
+    def update_song_duration(self, video_id: str, duration_secs: int) -> None:
+        """Update the duration of an existing song."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE songs
+                SET duration_secs = ?
+                WHERE video_id = ?
+                """,
+                (duration_secs, video_id),
+            )
+            conn.commit()
+
     def song_exists(self, video_id: str) -> bool:
         """Check if a song already exists in the library."""
         with self._connect() as conn:

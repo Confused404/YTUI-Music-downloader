@@ -416,7 +416,8 @@ class TMDApp(App):
             from tmd.auth import load_credentials
             self.creds = load_credentials()
             if self.creds:
-                new_songs = sync_liked_songs(self.creds, self.db)
+                # TODO: wire self.settings.filter_music_only when a settings toggle is added
+                new_songs = sync_liked_songs(self.creds, self.db, filter_music_only=True)
                 if new_songs:
                     self.notify(f"Found {len(new_songs)} new liked songs!")
                     self._ensure_download_manager()
