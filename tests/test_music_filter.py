@@ -6,7 +6,12 @@ pass through the filter and identify false positives.
 
 import pytest
 from unittest.mock import MagicMock, patch
-from tmd.sync import fetch_liked_songs, _is_music_channel, _parse_duration
+from tmd.sync import (
+    fetch_liked_songs,
+    _is_music_channel,
+    _parse_duration,
+    _has_non_music_keywords,
+)
 
 
 # ── Test Data: Real-world video scenarios ──
@@ -60,16 +65,16 @@ NON_MUSIC_VIDEOS = [
         "artist": "MemeLord Official",
         "duration": "PT45S",  # 45s - too short
         "category_id": "24",  # Entertainment
-        "expected": False,  # BUT: "Official" in channel name!
+        "expected": False,
     },
     {
         "name": "Gaming video with ' - ' in title",
         "video_id": "test_103",
         "title": "Minecraft - How to Build a House",
-        "artist": "GamingWithMusic",  # Contains "Music"!
+        "artist": "GamingWithMusic",
         "duration": "PT5M30S",  # 330s - within range
         "category_id": "20",  # Gaming
-        "expected": False,  # BUT: "Music" in channel name!
+        "expected": False,  # "How to" in title is non-music keyword
     },
     {
         "name": "Tutorial video within duration range",
@@ -78,7 +83,7 @@ NON_MUSIC_VIDEOS = [
         "artist": "Programming Official",
         "duration": "PT4M00S",  # 240s - within range
         "category_id": "27",  # Education
-        "expected": False,  # BUT: "Official" in channel name!
+        "expected": False,  # "How to" in title is non-music keyword
     },
     {
         "name": "Movie trailer with ' - ' in title",
@@ -102,19 +107,19 @@ NON_MUSIC_VIDEOS = [
         "name": "Vlog with ' - ' in title",
         "video_id": "test_107",
         "title": "My Day - Vlog #42",
-        "artist": "Vlogger Official",  # Contains "Official"!
+        "artist": "Vlogger Official",
         "duration": "PT4M00S",  # 240s - within range
         "category_id": "22",  # People & Blogs
-        "expected": False,  # BUT: "Official" in channel name!
+        "expected": False,  # "vlog" in title is non-music keyword
     },
     {
         "name": "Sports highlight with ' - ' in title",
         "video_id": "test_108",
         "title": "NBA - Best Dunks 2024",
-        "artist": "Sports Music Channel",  # Contains "Music"!
+        "artist": "Sports Music Channel",
         "duration": "PT3M45S",  # 225s - within range
         "category_id": "17",  # Sports
-        "expected": False,  # BUT: "Music" in channel name!
+        "expected": False,  # Rejected by category blacklist (Sports)
     },
 ]
 
@@ -127,7 +132,9 @@ EDGE_CASES = [
         "artist": "DJ Official",
         "duration": "PT1H30M",  # 5400s - too long for duration gate
         "category_id": "10",  # Music category
-        "expected": True,  # Passes via categoryId == "10"
+        # Now categoryId==10 requires duration 60-600s to prevent
+        # livestreams and miscategorized long content from passing
+        "expected": False,
     },
     {
         "name": "Short song intro clip",
@@ -136,7 +143,8 @@ EDGE_CASES = [
         "artist": "Artist Name",
         "duration": "PT30S",  # 30s - too short
         "category_id": "10",  # Music category
-        "expected": True,  # Passes via categoryId == "10"
+        # Now categoryId==10 requires duration 60-600s
+        "expected": False,
     },
     {
         "name": "Podcast at exactly 60s boundary",
@@ -151,10 +159,19 @@ EDGE_CASES = [
         "name": "Video at exactly 600s boundary",
         "video_id": "test_204",
         "title": "Review - Product Name",
-        "artist": "Review Channel Official",  # "Official"!
+        "artist": "Review Channel Official",
         "duration": "PT10M00S",  # 600s - exactly at upper boundary
         "category_id": "24",  # Entertainment
-        "expected": False,  # BUT: "Official" in channel name!
+        "expected": False,  # "review" in title is non-music keyword
+    },
+    {
+        "name": "VEVO channel in blacklisted category",
+        "video_id": "test_205",
+        "title": "Artist - Song (Live at Sports Event)",
+        "artist": "ArtistVEVO",
+        "duration": "PT4M00S",  # 240s - within range
+        "category_id": "17",  # Sports (blacklisted!)
+        "expected": True,  # Channel whitelist MUST override category blacklist
     },
 ]
 
@@ -209,13 +226,13 @@ class TestMusicChannelHeuristic:
     def test_topic_channel_passes(self):
         assert _is_music_channel("Taylor Swift - Topic") is True
     
-    def test_official_in_channel_passes(self):
-        # This is a potential source of false positives!
-        assert _is_music_channel("Vlogger Official") is True
-    
-    def test_music_in_channel_passes(self):
-        # Another potential false positive source
-        assert _is_music_channel("Sports Music Channel") is True
+    def test_official_in_channel_rejected(self):
+        # "official" removed from keywords — too many false positives
+        assert _is_music_channel("Vlogger Official") is False
+
+    def test_music_in_channel_rejected(self):
+        # "music" removed from keywords — too many false positives
+        assert _is_music_channel("Sports Music Channel") is False
     
     def test_regular_channel_fails(self):
         assert _is_music_channel("PewDiePie") is False

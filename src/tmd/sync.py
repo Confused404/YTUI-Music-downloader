@@ -16,7 +16,24 @@ LIKED_PLAYLIST_ID = "LL"
 _DURATION_RE = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?")
 
 # Music channel markers for Pass 1 heuristic (zero API cost)
-_MUSIC_CHANNEL_KEYWORDS = ("vevo", " - topic", "official", "music")
+# NOTE: "official" and "music" removed due to high false-positive rates
+_MUSIC_CHANNEL_KEYWORDS = ("vevo", " - topic")
+
+# Non-music keywords in titles that should cause rejection
+_NON_MUSIC_TITLE_KEYWORDS = (
+    "trailer", "review", "tutorial", "vlog", "podcast", "how to",
+    "walkthrough", "unboxing", "reaction", "compilation",
+    "highlights", "news", "interview", "documentary",
+    "gameplay", "lets play", "live stream", "asmr",
+    "cooking", "recipe", "workout", "fitness", "meditation",
+    "stand-up", "comedy special", "full special",
+)
+
+# YouTube category IDs that are virtually never music content.
+# Only checked for videos not already whitelisted by channel name.
+_NON_MUSIC_CATEGORY_IDS = frozenset({"17", "20", "22", "25", "27", "28"})
+# 17=Sports, 20=Gaming, 22=People & Blogs, 25=News & Politics,
+# 27=Education, 28=Science & Technology
 
 
 class SyncError(Exception):
@@ -46,6 +63,14 @@ def _is_music_channel(channel_title: str) -> bool:
         return False
     lower = channel_title.lower()
     return any(marker in lower for marker in _MUSIC_CHANNEL_KEYWORDS)
+
+
+def _has_non_music_keywords(title: str) -> bool:
+    """Return True if the title contains keywords suggesting non-music content."""
+    if not title:
+        return False
+    lower = title.lower()
+    return any(kw in lower for kw in _NON_MUSIC_TITLE_KEYWORDS)
 
 
 def _fetch_video_details(
@@ -124,14 +149,30 @@ def fetch_liked_songs(
                 result.append(song)
                 continue
 
+            # Early rejection: non-music keywords in title
+            # Catch trailers, podcasts, tutorials, news, etc. regardless of other signals
+            if _has_non_music_keywords(song["title"]):
+                continue  # Silently drop
+
             # Pass 1: channel-name heuristic (free)
+            # Only VEVO and Topic channels — "official" and "music" removed
+            # due to high false-positive rates
             if _is_music_channel(song["artist"]):
                 result.append(song)
-            # Pass 2: categoryId == 10 (Music)
-            elif category_id == "10":
+                continue
+
+            # Early rejection: known non-music categories
+            # Only for videos not whitelisted by channel name above
+            if category_id in _NON_MUSIC_CATEGORY_IDS:
+                continue  # Silently drop
+
+            # Pass 2: categoryId == 10 (Music) + duration check
+            # Require BOTH to prevent miscategorized non-music content
+            if category_id == "10" and 60 <= duration <= 600:
                 result.append(song)
-            # Pass 2: duration gate + title pattern
-            elif 60 <= duration <= 600 and " - " in song["title"]:
+            # Pass 3: duration gate + title pattern
+            elif (60 <= duration <= 600
+                  and " - " in song["title"]):
                 result.append(song)
             # Otherwise: silently drop as non-music
 
