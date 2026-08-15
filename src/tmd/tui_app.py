@@ -467,10 +467,19 @@ class TMDApp(App):
                 self.auth_expired = False
                 # TODO: wire self.settings.filter_music_only when a settings toggle is added
                 new_songs = sync_liked_songs(self.creds, self.db, filter_music_only=True)
+                pending_songs = self.db.get_pending_songs()
+
                 if new_songs:
                     self.notify(f"Found {len(new_songs)} new liked songs!")
+
+                if new_songs or pending_songs:
                     self._ensure_download_manager()
-                    self.download_manager.queue_songs(new_songs)
+                    if new_songs:
+                        self.download_manager.queue_songs(new_songs)
+                    if pending_songs:
+                        self.download_manager.queue_songs(pending_songs)
+                        self.notify(f"Queued {len(pending_songs)} pending downloads")
+
                 self._refresh_library()
                 # Pass download progress to library screen
                 library_screen = self.get_screen("library")
