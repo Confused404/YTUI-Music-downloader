@@ -14,6 +14,7 @@ import requests
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google.auth.exceptions import RefreshError
 
 from tmd.config import get_credentials_path
 
@@ -173,8 +174,18 @@ def load_credentials() -> Optional[Credentials]:
 
     # Refresh if expired
     if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        save_credentials(creds)
+        try:
+            creds.refresh(Request())
+            save_credentials(creds)
+        except RefreshError as e:
+            if "invalid_grant" in str(e):
+                # Token expired or revoked — clean up and prompt re-auth
+                logout()
+                raise TokenExpiredError(
+                    "Your session expired. Please sign in again."
+                ) from e
+            # Other refresh errors (network, etc.) propagate normally
+            raise AuthenticationError(f"Token refresh failed: {e}") from e
 
     return creds
 
@@ -194,4 +205,9 @@ def logout() -> None:
 
 class AuthenticationError(Exception):
     """Raised when authentication fails."""
+    pass
+
+
+class TokenExpiredError(AuthenticationError):
+    """Raised when the refresh token has expired or been revoked."""
     pass

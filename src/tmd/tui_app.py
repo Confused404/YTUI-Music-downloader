@@ -29,7 +29,7 @@ from textual.widgets import (
 from textual.canvas import Canvas
 
 from tmd.database import Database, Song
-from tmd.auth import is_authenticated, logout, Credentials, AuthenticationError
+from tmd.auth import is_authenticated, logout, Credentials, AuthenticationError, TokenExpiredError
 from googleapiclient.discovery import build
 from tmd.sync import sync_liked_songs, SyncError
 from tmd.download import DownloadManager, DownloadProgress
@@ -96,6 +96,26 @@ class VisualizerWidget(Static):
             lines.append(line)
 
         return "\n".join(lines)
+
+
+# ── Auth Banner ──
+
+class AuthBanner(Static):
+    """Dismissible banner shown when OAuth token expires."""
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="auth-banner"):
+            yield Label("⚠ Session expired", classes="auth-banner-text")
+            yield Button("Re-authenticate", variant="primary", id="reauth-btn")
+            yield Button("✕", variant="error", id="dismiss-btn")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "reauth-btn":
+            app = self.app
+            if isinstance(app, TMDApp):
+                app.action_login()
+        elif event.button.id == "dismiss-btn":
+            self.display = False
 
 
 # ── Login Screen ──
@@ -376,6 +396,20 @@ class TMDApp(App):
         height: auto;
         padding: 2;
     }
+    
+    .auth-banner {
+        dock: bottom;
+        height: 3;
+        align: right middle;
+        background: $surface-darken-2;
+        color: $warning;
+        padding: 0 2;
+    }
+    
+    .auth-banner-text {
+        content-align: center middle;
+        padding: 0 1;
+    }
     """
 
     BINDINGS = [
@@ -391,6 +425,8 @@ class TMDApp(App):
         "settings": SettingsScreen,
     }
 
+    auth_expired = reactive(False)
+
     def __init__(self):
         super().__init__()
         self.settings = Settings.load(get_settings_path())
@@ -403,19 +439,32 @@ class TMDApp(App):
         self.creds: Optional[Credentials] = None
         self.current_song_index: int = 0
         self.download_progress: dict = {}  # video_id -> percent
+        self.auth_banner: Optional[AuthBanner] = None
 
     def on_mount(self) -> None:
+        # Mount auth banner at app level (persists across screens)
+        self.auth_banner = AuthBanner()
+        self.mount(self.auth_banner)
+        self.auth_banner.display = False
+
         if is_authenticated():
             self.push_screen("library")
             asyncio.create_task(self._startup_sync())
         else:
             self.push_screen("login")
 
+    def watch_auth_expired(self, expired: bool) -> None:
+        """Show/hide auth banner based on reactive flag."""
+        if self.auth_banner:
+            self.auth_banner.display = expired
+
     async def _startup_sync(self) -> None:
         try:
             from tmd.auth import load_credentials
             self.creds = load_credentials()
             if self.creds:
+                # Clear auth expired flag on successful credential load
+                self.auth_expired = False
                 # TODO: wire self.settings.filter_music_only when a settings toggle is added
                 new_songs = sync_liked_songs(self.creds, self.db, filter_music_only=True)
                 if new_songs:
@@ -427,6 +476,10 @@ class TMDApp(App):
                 library_screen = self.get_screen("library")
                 if isinstance(library_screen, LibraryScreen):
                     library_screen.download_progress = self.download_progress
+        except TokenExpiredError:
+            # Silently show auth banner — no error toast
+            self.auth_expired = True
+            self.creds = None
         except SyncError as e:
             self.notify(_clean_msg(str(e)), severity="error", timeout=15)
         except Exception as e:
@@ -464,6 +517,8 @@ class TMDApp(App):
                     self.settings.youtube_client_id,
                     self.settings.youtube_client_secret,
                 )
+                # Clear auth expired flag on successful login
+                self.auth_expired = False
                 self.switch_screen("library")
                 await self._startup_sync()
             except AuthenticationError as e:
@@ -496,6 +551,9 @@ class TMDApp(App):
                 search_screen = self.get_screen("search")
                 if isinstance(search_screen, SearchScreen):
                     search_screen.results = results
+            except TokenExpiredError:
+                self.auth_expired = True
+                self.creds = None
             except Exception as e:
                 self.notify(_clean_msg(f"Search failed: {e}"), severity="error")
 
@@ -562,6 +620,9 @@ class TMDApp(App):
                 self._ensure_download_manager()
                 self.download_manager.queue_song(song)
                 self._refresh_library()
+            except TokenExpiredError:
+                self.auth_expired = True
+                self.creds = None
             except Exception as e:
                 print(f"[DOWNLOAD ERROR] action_download_and_like: {e}")
                 import traceback
